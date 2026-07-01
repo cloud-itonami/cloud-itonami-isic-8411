@@ -1,0 +1,10 @@
+{:itonami.blueprint/id "cloud-itonami-8411"
+ :itonami.blueprint/name "Community Public Administration Service"
+ :itonami.blueprint/isic-rev5 "8411"
+ :itonami.blueprint/domain :public/administration
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:civic-access :transparency :accountability]
+ :itonami.blueprint/governor :public-administration-governor
+ :itonami.blueprint/robotics true
+ :itonami.blueprint/required-technologies [:robotics :identity :forms :dmn :bpmn :audit-ledger]
+ :itonami.blueprint/status :public-oss}
