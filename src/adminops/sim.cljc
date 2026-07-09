@@ -1,0 +1,121 @@
+(ns adminops.sim
+  "Demo driver -- `clojure -M:dev:run`. Walks a clean case through
+  intake -> jurisdiction assessment -> case decision (escalate/
+  approve/commit) -> citizen notification (escalate/approve/commit),
+  then a SEPARATE clean adverse-decision case through the same
+  lifecycle (demonstrating the conditional appeal-rights-notice check
+  passing cleanly), then shows HARD-hold scenarios: a jurisdiction
+  with no spec-basis, an assessed-fee mismatch (verified first), a
+  decision outside delegated authority, and a missing appeal-rights
+  notice on an adverse-decision case, a double decision, and a double
+  notification.
+
+  Like `retailops`/4711's, `freightops`/4920's, `quarryops`/0810's,
+  `agronomyops`/0162's, `hospitalityops`/5510's, `practiceops`/7110's
+  and `employmentops`/7810's own new checks, this actor's new checks
+  (`decision-outside-authority?`, `appeal-rights-notice-missing?`) are
+  evaluated directly at `:case/decide`/`:case/notify` time rather than
+  via a separate screening op -- a real decision/notification
+  decision validates delegated authority and appeal-rights disclosure
+  at the point of the act itself. Each check is still exercised
+  directly and independently below, one case per HARD-hold scenario,
+  following the SAME 'exercise the failure mode directly, never only
+  via a happy-path actuation' discipline `parksafety`'s ADR-2607071922
+  Decision 5 and every sibling since establish."
+  (:require [langgraph.graph :as g]
+            [adminops.store :as store]
+            [adminops.operation :as op]))
+
+(def operator {:actor-id "op-1" :actor-role :case-officer :phase 3})
+
+(defn- exec-op [actor tid request context]
+  (g/run* actor {:request request :context context} {:thread-id tid}))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by "op-1"}} {:thread-id tid :resume? true}))
+
+(defn -main [& _]
+  (let [db (store/seed-db)
+        actor (op/build db)]
+    (println "== case/intake case-1 (JPN, clean, non-adverse decision) ==")
+    (println (exec-op actor "t1" {:op :case/intake :subject "case-1"
+                                  :patch {:id "case-1" :applicant "Kita Taro"}} operator))
+
+    (println "== jurisdiction/assess case-1 (escalates -- human approves) ==")
+    (println (exec-op actor "t2" {:op :jurisdiction/assess :subject "case-1"} operator))
+    (println (approve! actor "t2"))
+
+    (println "== case/decide case-1 (always escalates -- actuation/decide-case) ==")
+    (let [r (exec-op actor "t3" {:op :case/decide :subject "case-1"} operator)]
+      (println r)
+      (println "-- human case officer approves --")
+      (println (approve! actor "t3")))
+
+    (println "== case/notify case-1 (always escalates -- actuation/notify-citizen) ==")
+    (let [r (exec-op actor "t4" {:op :case/notify :subject "case-1"} operator)]
+      (println r)
+      (println "-- human case officer approves --")
+      (println (approve! actor "t4")))
+
+    (println "== case/intake case-6 (JPN, clean, adverse decision with appeal rights disclosed) ==")
+    (println (exec-op actor "t5" {:op :case/intake :subject "case-6"
+                                  :patch {:id "case-6" :applicant "Chuo Yuki"}} operator))
+
+    (println "== jurisdiction/assess case-6 (escalates -- human approves) ==")
+    (println (exec-op actor "t6" {:op :jurisdiction/assess :subject "case-6"} operator))
+    (println (approve! actor "t6"))
+
+    (println "== case/decide case-6 (always escalates) ==")
+    (println (exec-op actor "t6b" {:op :case/decide :subject "case-6"} operator))
+    (println (approve! actor "t6b"))
+
+    (println "== case/notify case-6 (adverse, appeal rights disclosed -- escalates -- human approves) ==")
+    (println (exec-op actor "t7" {:op :case/notify :subject "case-6"} operator))
+    (println (approve! actor "t7"))
+
+    (println "== jurisdiction/assess case-2 (no spec-basis -> HARD hold) ==")
+    (println (exec-op actor "t8" {:op :jurisdiction/assess :subject "case-2" :no-spec? true} operator))
+
+    (println "== jurisdiction/assess case-3 (escalates -- human approves; sets up the fee-mismatch test) ==")
+    (println (exec-op actor "t9" {:op :jurisdiction/assess :subject "case-3"} operator))
+    (println (approve! actor "t9"))
+
+    (println "== case/decide case-3 (always escalates) ==")
+    (println (exec-op actor "t9b" {:op :case/decide :subject "case-3"} operator))
+    (println (approve! actor "t9b"))
+
+    (println "== case/notify case-3 (claimed 20000.0 vs recompute 18000.0 -> HARD hold) ==")
+    (println (exec-op actor "t10" {:op :case/notify :subject "case-3"} operator))
+
+    (println "== jurisdiction/assess case-4 (escalates -- human approves; sets up the outside-authority test) ==")
+    (println (exec-op actor "t11" {:op :jurisdiction/assess :subject "case-4"} operator))
+    (println (approve! actor "t11"))
+
+    (println "== case/decide case-4 (decision outside delegated authority -> HARD hold) ==")
+    (println (exec-op actor "t12" {:op :case/decide :subject "case-4"} operator))
+
+    (println "== jurisdiction/assess case-5 (escalates -- human approves; sets up the appeal-rights test) ==")
+    (println (exec-op actor "t13" {:op :jurisdiction/assess :subject "case-5"} operator))
+    (println (approve! actor "t13"))
+
+    (println "== case/decide case-5 (always escalates) ==")
+    (println (exec-op actor "t13b" {:op :case/decide :subject "case-5"} operator))
+    (println (approve! actor "t13b"))
+
+    (println "== case/notify case-5 (adverse decision, appeal rights not disclosed -> HARD hold) ==")
+    (println (exec-op actor "t14" {:op :case/notify :subject "case-5"} operator))
+
+    (println "== case/decide case-1 AGAIN (double-decision -> HARD hold) ==")
+    (println (exec-op actor "t15" {:op :case/decide :subject "case-1"} operator))
+
+    (println "== case/notify case-1 AGAIN (double-notification -> HARD hold) ==")
+    (println (exec-op actor "t16" {:op :case/notify :subject "case-1"} operator))
+
+    (println "== audit ledger ==")
+    (doseq [f (store/ledger db)] (println f))
+
+    (println "== draft decision records ==")
+    (doseq [r (store/decision-history db)] (println r))
+
+    (println "== draft notification records ==")
+    (doseq [r (store/notification-history db)] (println r))))
