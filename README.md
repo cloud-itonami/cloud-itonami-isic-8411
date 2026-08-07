@@ -81,6 +81,42 @@ the SAME case record (decide first, notify later), matching
 sequential shape rather than `retailops`/4711's own alternative-kind
 shape.
 
+### Statutory deadlines (`kotoba-lang/tetsuzuki`)
+
+The original checks asked whether the deciding official had authority,
+whether the fee matched, whether appeal rights were disclosed and whether
+the case was already decided. None of them asked **whether the agency is
+still inside its own statutory period** — and for an authority-side
+deadline, lapsing does not merely mean "late". It means different things
+in different jurisdictions, and two of them are already legally decisive:
+
+| | On lapse |
+|---|---|
+| DEU VwVfG §42a | the application is **deemed granted** |
+| CAN ATIA s.10(3) | access is **deemed refused** |
+| USA FOIA §552(a)(6)(C) | the requester gains standing to sue |
+| JPN 行政手続法 §6 | 標準処理期間 — **no automatic legal effect** |
+
+Where a deeming effect has already taken hold, the agency **cannot now
+decide** what the law has already deemed; layering a decision on top
+would contradict a legal fiction that is already in force. That is the
+`:decision-precluded-by-lapse` HARD check.
+
+Two further disciplines:
+
+- **Unresolved deadlines fail closed.** No anchor day, a months-based
+  period that cannot be resolved in epoch-days, a business-day period
+  with no holiday calendar, a procedure absent from the catalog — all
+  hold. An agency that cannot say whether it is inside its own statutory
+  period does not get to decide. This is deliberately inconvenient.
+- **Undeclared cases pass through.** Not every community case maps to a
+  catalogued statutory procedure, and absence is not a violation. But a
+  case that *declares* a `:procedure-id` is always checked — declaring it
+  means accepting its deadline.
+
+The deadline is recomputed from the case's own records; the proposal's
+claim is never read as an input.
+
 ## The core contract
 
 ```
