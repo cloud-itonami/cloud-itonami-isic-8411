@@ -185,6 +185,7 @@
   informed by `cloud-itonami-isic-6492`'s status-lifecycle bug
   (ADR-2607071320)."
   (:require [adminops.facts :as facts]
+            [adminops.procedure :as procedure]
             [adminops.registry :as registry]
             [adminops.store :as store]))
 
@@ -285,6 +286,52 @@
       [{:rule :already-notified
         :detail (str subject " は既に通知済み")}])))
 
+(defn- statutory-deadline-violations
+  "For `:case/decide`: recompute the statutory deadline INDEPENDENTLY from
+  `kotoba-lang/tetsuzuki` and the case's own records, and HOLD when the
+  agency may not decide.
+
+  Three HARD rules, all specific to AUTHORITY-side deadlines (the kind
+  this actor's original checks had no notion of at all):
+
+  - `:procedure-deadline-unresolved` -- the deadline could not be
+    resolved (no basis, no anchor day, needs a business calendar, needs
+    a real calendar date). Fail closed: an agency that cannot say
+    whether it is inside its own statutory period does not get to
+    decide. `:not-declared` cases are exempt (not every community case
+    maps to a catalogued statutory procedure), but a case that DECLARES
+    a `:procedure-id` is always checked.
+
+  - `:decision-precluded-by-lapse` -- a deeming effect has ALREADY taken
+    legal effect (DEU VwVfG §42a deemed granted / CAN ATIA s.10(3)
+    deemed refused). The agency cannot now 'decide' what the law has
+    already deemed; layering a decision on top would contradict a legal
+    fiction that is already in force.
+
+  - `:procedure-formal-review-incomplete` -- the declared procedure's own
+    formal-review items are not all satisfied."
+  [{:keys [op subject]} context st]
+  (when (= op :case/decide)
+    (let [c (store/case-record st subject)
+          ctx {:anchors (:anchors context) :calendar (:calendar context)}
+          status (procedure/deadline-status c ctx)
+          review (procedure/formal-review-outcome c)]
+      (seq
+       (cond-> []
+         (procedure/deadline-blocking? status)
+         (conj {:rule :procedure-deadline-unresolved
+                :detail (procedure/explain c ctx)})
+
+         (procedure/decision-precluded? c ctx)
+         (conj {:rule :decision-precluded-by-lapse
+                :detail (str "みなし処分が既に効力を生じている: "
+                             (procedure/explain c ctx)
+                             " —— 擬制と矛盾する処分を重ねられない")})
+
+         (contains? #{:deficient :unknown} review)
+         (conj {:rule :procedure-formal-review-incomplete
+                :detail (str "宣言された手続きの形式審査が " review)}))))))
+
 (defn check
   "Censors an AdminOps-LLM proposal against the governor rules.
   Returns {:ok? bool :violations [..] :confidence c :escalate? bool
@@ -296,6 +343,7 @@
                            (decision-outside-authority-violations request st)
                            (assessed-fee-mismatch-violations request st)
                            (appeal-rights-notice-missing-violations request st)
+                           (statutory-deadline-violations request _context st)
                            (already-decided-violations request st)
                            (already-notified-violations request st)))
         conf (:confidence proposal 0.0)

@@ -6,8 +6,12 @@
  ;; repo is standalone (forkable outside the workspace); the :local/root
  ;; paths only resolve inside the monorepo checkout — a standalone fork
  ;; should override them with git coordinates.
+ ;; tetsuzuki — 法定手続きの期限と徒過効果（誰を縛るか / 暦日か営業日か /
+ ;; 徒過したら何が起きるか）。:case/decide の governor check が消費する。
  :deps {io.github.kotoba-lang/langgraph
-        {:local/root "../../kotoba-lang/langgraph"}}
+        {:local/root "../../kotoba-lang/langgraph"}
+        io.github.kotoba-lang/tetsuzuki
+        {:local/root "../../kotoba-lang/tetsuzuki"}}
  :aliases
  {;; offline workspace dev -- pin transitive langchain to local checkout
   :dev {:override-deps
