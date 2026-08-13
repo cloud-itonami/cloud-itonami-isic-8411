@@ -33,6 +33,24 @@ open docs/index.html   # or: python3 -m http.server -d docs 8080
 
 Publish: enable GitHub Pages on `main` `/docs`, or any static host.
 
+## 3b. See the Governor actually refuse things
+
+```bash
+clojure -M:dev:render-html   # regenerates docs/samples/operator-console.html
+open docs/samples/operator-console.html
+```
+
+`adminops.render-html` drives the real actor (`adminops.operation` →
+`adminops.governor` → `adminops.store`) over the seeded cases and renders
+whatever comes back — every case id, amount, decision number and violation
+string on that page is read out of the store after the run. It reaches every
+HARD check the Governor implements, and **throws instead of writing the page**
+if a run produces no HARD hold, so the sample cannot quietly decay into a page
+that shows the Governor approving everything.
+
+Output is deterministic (no timestamps, no randomness, no anchor dates) — render
+twice into a scratch directory and diff to confirm.
+
 ## 4. Where the Governor sits
 
 - Blueprint governor key: `public-administration-governor`

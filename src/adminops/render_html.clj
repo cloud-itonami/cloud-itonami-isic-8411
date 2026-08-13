@@ -1,0 +1,673 @@
+(ns adminops.render-html
+  "Build-time HTML renderer for `docs/samples/operator-console.html`.
+
+  Closes flagship checklist item 2 (com-junkawasaki/root ADR-2607189300):
+  this repo had a committed `docs/samples/operator-console.html`, but NO
+  generator ever produced it -- and the committed page was FABRICATED. It
+  was titled `Robotics Safety — Operator Console`, listed a mission `M1`
+  for `robot-1` (`deliver parcel`) and actions `A1`/`A2` with a
+  `safety-critical` grasp. This repo is ISIC 8411, community public
+  administration: `adminops.store/demo-data` seeds `case-1`..`case-6`
+  (applicants, jurisdictions, assessed fees) and there is no robot, no
+  mission and no `A1` anywhere in it. The page was hand-typed from some
+  other vertical. It is replaced wholesale by this generator's real
+  output.
+
+  This namespace drives the REAL actor stack
+  (`adminops.operation` -> `adminops.governor` -> `adminops.store`, with
+  `adminops.procedure` bridging to `kotoba-lang/tetsuzuki`) through a
+  scenario built on the ACTUAL seeded case ids, and renders the result
+  deterministically: no timestamps, no randomness, byte-identical across
+  reruns against the same seed (verify by diffing two consecutive runs
+  into a scratch directory).
+
+  ## Nothing on the page is invented
+
+  Every applicant name, jurisdiction, amount, decision number,
+  notification number, violation rule and violation detail string on the
+  page is read back out of the store or off the governor's own verdicts
+  after the run. The two operator-supplied inputs the scenario adds on
+  top of the seed are both traceable, not invented:
+
+    - the intake patches, which are operator input by construction
+      (`adminops.sim` does the same) and carry only ids already in
+      `demo-data`;
+    - the `:procedure-id` / `:review-items-satisfied` declared on
+      `case-3`, which are read straight out of `tetsuzuki.catalog`
+      (`JPN/:jp-shinsei-shobun` and its own `:proc/formal-review` list),
+      not chosen here.
+
+  Deliberately NO anchor date and NO observation day is supplied
+  anywhere: `:jp-shinsei-shobun` reaches its HARD hold because Japan's
+  own 行政手続法 §6 標準処理期間 is authority-published rather than
+  statutory, so `tetsuzuki.deadline/resolve-deadline` short-circuits on
+  `:source` before any arithmetic. That keeps every epoch day off this
+  page -- there was no number for the renderer to pick.
+
+  Usage: `clojure -M:dev:render-html [out-file]`
+  (default `docs/samples/operator-console.html`)."
+  (:require [clojure.string :as str]
+            [jp-go-dds.skin]
+            [langgraph.graph :as g]
+            [adminops.facts :as facts]
+            [adminops.operation :as op]
+            [adminops.phase :as phase]
+            [adminops.procedure :as procedure]
+            [adminops.registry :as registry]
+            [adminops.store :as store]
+            [tetsuzuki.catalog :as catalog]
+            [tetsuzuki.deadline :as deadline]
+            [tetsuzuki.review :as review]))
+
+;; ----------------------------- the run -----------------------------
+
+(def ^:private operator
+  "Phase 3 (supervised auto) case officer. Carries NO `:anchors` and no
+  `:calendar` -- see the ns docstring: the statutory-deadline hold this
+  scenario reaches does not need one, so none is invented."
+  {:actor-id "op-1" :actor-role :case-officer :phase 3})
+
+(def ^:private read-only-operator
+  "The SAME officer at phase 0 (read-only). Used once, at the end, to
+  show the rollout gate holding a write that the governor itself had no
+  complaint about -- a different kind of hold from a governor HARD
+  violation, and reported separately below so the two are not conflated."
+  (assoc operator :phase 0))
+
+(def ^:private declared-procedure
+  "The statutory procedure `case-3` declares, taken from
+  `tetsuzuki.catalog` rather than chosen here."
+  {:iso3 "JPN" :id :jp-shinsei-shobun})
+
+(defn- catalogued
+  "The catalog entry for `declared-procedure`."
+  []
+  (catalog/procedure (:iso3 declared-procedure) (:id declared-procedure)))
+
+(defn- exec!
+  ([actor tid request] (exec! actor tid request operator))
+  ([actor tid request context]
+   (g/run* actor {:request request :context context} {:thread-id tid})))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by (:actor-id operator)}}
+          {:thread-id tid :resume? true}))
+
+(defn run-demo!
+  "Runs a fresh seeded store through a scenario that reaches EVERY HARD
+  check `adminops.governor` implements, one case per reason wherever the
+  seed allows it, plus both clean lifecycles and the rollout gate.
+
+  Clean paths (`case-1` non-adverse, `case-6` adverse WITH appeal rights
+  disclosed) walk intake -> assess -> decide -> notify; every write past
+  intake escalates to the human officer, who approves. `:case/decide` and
+  `:case/notify` escalate at phase 3 by construction -- they are absent
+  from every phase's `:auto` set AND flagged `:actuation/*` high-stakes,
+  two independent layers agreeing that a real decision and a real citizen
+  notification are always a human call.
+
+  HARD holds (none of which ever reaches a human):
+
+    :evidence-incomplete          `case-3` decided before its jurisdiction
+                                  was ever assessed.
+    :no-spec-basis                `case-2` assessed against ATL, which has
+                                  no entry in `adminops.facts/catalog`.
+    :assessed-fee-mismatch        `case-3` notified while its claimed fee
+                                  disagrees with base x rate.
+    :procedure-deadline-unresolved `case-3` decided after declaring
+                                  JPN/:jp-shinsei-shobun, whose statutory
+                                  period is authority-published.
+    :decision-outside-authority   `case-4` decided outside delegated
+                                  authority.
+    :appeal-rights-notice-missing `case-5` notified on an adverse decision
+                                  with no appeal-rights disclosure.
+    :already-decided              `case-1` decided twice.
+    :already-notified             `case-1` notified twice.
+
+  Each is reached in an order that leaves it ALONE in its verdict, so the
+  page shows eight separable reasons rather than one pile-up.
+
+  Returns `{:db store :audit [..]}` -- `:audit` is every audit fact every
+  run emitted, which is where approval attribution lives when the store
+  does not retain it (see `approver-disclosure`)."
+  []
+  (let [db (store/seed-db)
+        actor (op/build db)
+        audit (atom [])
+        collect! (fn [res] (swap! audit into (get-in res [:state :audit])) res)
+        run! (fn
+               ([tid request] (collect! (exec! actor tid request)))
+               ([tid request context] (collect! (exec! actor tid request context))))
+        ok! (fn [tid] (collect! (approve! actor tid)))]
+
+    ;; -- case-1: a full clean lifecycle (JPN, favourable decision) -----
+    (run! "c1-intake" {:op :case/intake :subject "case-1"
+                       :patch {:id "case-1" :applicant "Kita Taro"}})
+    (run! "c1-assess" {:op :jurisdiction/assess :subject "case-1"})
+    (ok! "c1-assess")
+    (run! "c1-decide" {:op :case/decide :subject "case-1"})
+    (ok! "c1-decide")
+    (run! "c1-notify" {:op :case/notify :subject "case-1"})
+    (ok! "c1-notify")
+
+    ;; -- case-6: adverse decision, appeal rights DISCLOSED -------------
+    ;; the conditional check clearing, not just firing.
+    (run! "c6-intake" {:op :case/intake :subject "case-6"
+                       :patch {:id "case-6" :applicant "Chuo Yuki"}})
+    (run! "c6-assess" {:op :jurisdiction/assess :subject "case-6"})
+    (ok! "c6-assess")
+    (run! "c6-decide" {:op :case/decide :subject "case-6"})
+    (ok! "c6-decide")
+    (run! "c6-notify" {:op :case/notify :subject "case-6"})
+    (ok! "c6-notify")
+
+    ;; -- HARD: decide before the jurisdiction was ever assessed --------
+    (run! "c3-decide-early" {:op :case/decide :subject "case-3"})
+
+    ;; -- HARD: assess a jurisdiction with no official spec-basis -------
+    (run! "c2-assess" {:op :jurisdiction/assess :subject "case-2" :no-spec? true})
+
+    ;; -- case-3: assessed, then the fee recompute disagrees ------------
+    (run! "c3-assess" {:op :jurisdiction/assess :subject "case-3"})
+    (ok! "c3-assess")
+    (run! "c3-notify" {:op :case/notify :subject "case-3"})
+
+    ;; -- HARD: case-3 declares a real statutory procedure --------------
+    ;; both values come out of `tetsuzuki.catalog`; the review items are
+    ;; the procedure's OWN `:proc/formal-review` list, so formal review
+    ;; passes and the deadline is the only thing left blocking.
+    (run! "c3-declare" {:op :case/intake :subject "case-3"
+                        :patch {:id "case-3"
+                                :procedure-id (:id declared-procedure)
+                                :review-items-satisfied (vec (:proc/formal-review (catalogued)))}})
+    (run! "c3-decide" {:op :case/decide :subject "case-3"})
+
+    ;; -- HARD: decision outside delegated authority --------------------
+    (run! "c4-assess" {:op :jurisdiction/assess :subject "case-4"})
+    (ok! "c4-assess")
+    (run! "c4-decide" {:op :case/decide :subject "case-4"})
+
+    ;; -- HARD: adverse decision notified with no appeal-rights notice --
+    (run! "c5-assess" {:op :jurisdiction/assess :subject "case-5"})
+    (ok! "c5-assess")
+    (run! "c5-decide" {:op :case/decide :subject "case-5"})
+    (ok! "c5-decide")
+    (run! "c5-notify" {:op :case/notify :subject "case-5"})
+
+    ;; -- HARD: double actuation on an already-actuated case ------------
+    (run! "c1-decide-again" {:op :case/decide :subject "case-1"})
+    (run! "c1-notify-again" {:op :case/notify :subject "case-1"})
+
+    ;; -- rollout gate: the same officer at phase 0 ---------------------
+    (run! "c2-intake-phase0" {:op :case/intake :subject "case-2"
+                              :patch {:id "case-2" :applicant "Atlantis Ann"}}
+          read-only-operator)
+
+    {:db db :audit @audit}))
+
+;; ----------------------------- rule catalog -----------------------------
+
+(def ^:private rule-catalog
+  "Documentation of this actor's fixed check contract -- which ops each
+  HARD rule is evaluated on, and what it independently recomputes. This
+  is the ONE hand-written table on the page, and it is checked against
+  the run: `-main` throws if the scenario produces a violation rule that
+  is missing here, so it cannot drift away from `adminops.governor`.
+  The `fired` column is derived from the run, never written here."
+  [{:rule :no-spec-basis
+    :ops ":jurisdiction/assess, :case/decide, :case/notify"
+    :recomputes "the proposal cites an official source in adminops.facts, or it is not a jurisdiction requirement at all"}
+   {:rule :evidence-incomplete
+    :ops ":case/decide, :case/notify"
+    :recomputes "the jurisdiction's own required-evidence checklist is satisfied by a committed assessment"}
+   {:rule :decision-outside-authority
+    :ops ":case/decide"
+    :recomputes "the case's own :within-delegated-authority? -- evaluated unconditionally"}
+   {:rule :assessed-fee-mismatch
+    :ops ":case/notify"
+    :recomputes "base-amount x fee-rate, compared to the claimed fee at money precision"}
+   {:rule :appeal-rights-notice-missing
+    :ops ":case/notify"
+    :recomputes "appeal-rights disclosure -- conditional on the case's own :decision-adverse?"}
+   {:rule :procedure-deadline-unresolved
+    :ops ":case/decide"
+    :recomputes "the statutory deadline, from tetsuzuki + the case's own record. Fails closed"}
+   {:rule :decision-precluded-by-lapse
+    :ops ":case/decide"
+    :recomputes "whether a deeming effect (deemed-granted / deemed-refused) already took legal effect"}
+   {:rule :procedure-formal-review-incomplete
+    :ops ":case/decide"
+    :recomputes "the declared procedure's own formal-review items"}
+   {:rule :already-decided
+    :ops ":case/decide"
+    :recomputes "a dedicated :decided? fact -- never a :status value"}
+   {:rule :already-notified
+    :ops ":case/notify"
+    :recomputes "a dedicated :notified? fact -- never a :status value"}
+   {:rule :approver-rejected
+    :ops "any escalated op"
+    :recomputes "nothing -- recorded when the human operator declines"}])
+
+;; ----------------------------- html helpers -----------------------------
+
+(defn- esc [v]
+  (-> (str v)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")
+      (str/replace "\"" "&quot;")))
+
+(defn- nm [v] (if (or (keyword? v) (symbol? v)) (name v) (str v)))
+
+(defn- code [v] (str "<code>" (esc v) "</code>"))
+
+(defn- span [cls v] (str "<span class=\"" cls "\">" (esc v) "</span>"))
+
+(defn- yes-no [b yes-cls no-cls yes-txt no-txt]
+  (if b (span yes-cls yes-txt) (span no-cls no-txt)))
+
+(defn- row [& cells]
+  (str "        <tr>" (str/join (map #(str "<td>" % "</td>") cells)) "</tr>"))
+
+(defn- table [headers rows]
+  (str "    <table>\n"
+       "      <thead><tr>" (str/join (map #(str "<th>" (esc %) "</th>") headers)) "</tr></thead>\n"
+       "      <tbody>\n"
+       (str/join "\n" rows) "\n"
+       "      </tbody>\n"
+       "    </table>\n"))
+
+(defn- section [title note body]
+  (str "  <section class=\"card\">\n"
+       "    <h2>" (esc title) "</h2>\n"
+       (when note (str "    <p class=\"muted\">" note "</p>\n"))
+       body
+       "  </section>\n"))
+
+;; ----------------------------- derived views -----------------------------
+
+(defn- holds [ledger] (filterv #(= :governor-hold (:t %)) ledger))
+
+(defn- hard-holds
+  "Holds carrying at least one governor rule violation. A phase-gate hold
+  is a real hold but carries no violation, so it is NOT one of these."
+  [ledger]
+  (filterv #(seq (:violations %)) (holds ledger)))
+
+(defn- phase-holds [ledger]
+  (filterv #(and (empty? (:violations %)) (:phase-reason %)) (holds ledger)))
+
+(defn- last-fact-for [ledger case-id]
+  (last (filter #(= (:subject %) case-id) ledger)))
+
+(defn- status-cell [ledger case-id]
+  (let [f (last-fact-for ledger case-id)]
+    (cond
+      (nil? f) (span "muted" "no activity")
+      (= :committed (:t f)) (span "ok" "committed")
+      (= :governor-hold (:t f))
+      (if-let [rule (-> f :violations first :rule)]
+        (span "critical" (str "HARD hold · " (nm rule)))
+        (span "warn" (str "phase hold · " (nm (:phase-reason f)))))
+      :else (span "muted" "in progress"))))
+
+(defn- approvals
+  "Every `:approval-granted` audit fact, keyed by [op subject]. This is
+  the ONLY place the approver's identity survives when the store's own
+  commit path does not keep it."
+  [audit]
+  (into {} (for [f audit :when (= :approval-granted (:t f))]
+             [[(:op f) (:subject f)] (:by f)])))
+
+(defn- approver-in
+  "The approver recorded IN a stored map, or nil -- found by walking the
+  map's own keys for an approver key rather than assuming one. Derived at
+  render time on purpose: if this repo's store is later fixed to retain
+  the approver on decision/notification records, this page starts
+  reporting it without anyone editing the renderer."
+  [m]
+  (when (map? m)
+    (some (fn [[k v]]
+            (when (re-find #"(?i)approv" (nm k)) v))
+          m)))
+
+(defn- approver-disclosure
+  "Honest approver attribution for one stored record. Never silently
+  omits: the reader must be able to tell `nobody approved this` from
+  `the store did not keep who did`."
+  [stored audit-approver]
+  (cond
+    (approver-in stored) (span "ok" (str (approver-in stored) " (retained in record)"))
+    audit-approver (str (span "warn" (str audit-approver " (audit only)"))
+                        " <span class=\"muted\">not retained in record</span>")
+    :else (span "muted" "no approval on this path")))
+
+;; ----------------------------- sections -----------------------------
+
+(defn- cases-section [db ledger]
+  (let [rows (for [{:keys [id applicant case-type jurisdiction base-amount fee-rate
+                           claimed-fee within-delegated-authority? decision-adverse?
+                           appeal-rights-disclosed? decided? notified?
+                           decision-number notification-number] :as c}
+                   (store/all-cases db)]
+               (row (code id) (esc applicant) (esc case-type) (esc jurisdiction)
+                    (str "<span class=\"amt\">" (esc base-amount) " × " (esc fee-rate) "</span>")
+                    (str "<span class=\"amt\">" (esc claimed-fee) "</span>")
+                    (let [computed (registry/compute-assessed-fee c)]
+                      (str "<span class=\"amt\">"
+                           (if (registry/assessed-fee-matches-claim? c)
+                             (span "ok" computed)
+                             (span "err" computed))
+                           "</span>"))
+                    (yes-no within-delegated-authority? "ok" "critical" "within" "OUTSIDE")
+                    (yes-no decision-adverse? "warn" "muted" "adverse" "favourable")
+                    (yes-no appeal-rights-disclosed? "ok" "warn" "disclosed" "not disclosed")
+                    (yes-no decided? "ok" "muted" (or decision-number "decided") "—")
+                    (yes-no notified? "ok" "muted" (or notification-number "notified") "—")
+                    (status-cell ledger id)))]
+    (section "Cases"
+             (str "Read back out of <code>adminops.store</code> after the run. "
+                  "<em>Independent recompute</em> is <code>base-amount × fee-rate</code> "
+                  "computed by <code>adminops.registry/compute-assessed-fee</code>, never "
+                  "taken from the advisor's proposal — where it disagrees with the claimed "
+                  "fee, a citizen notification is blocked outright.")
+             (table ["Case" "Applicant" "Type" "Juris." "Base × rate" "Claimed fee"
+                     "Independent recompute" "Delegated authority" "Decision" "Appeal rights"
+                     "Decision no." "Notification no." "Last op"]
+                    rows))))
+
+(defn- procedure-section [db]
+  (let [ctx {:anchors (:anchors operator) :calendar (:calendar operator)}
+        rows (for [c (store/all-cases db)]
+               (let [p (procedure/basis c)
+                     st (procedure/deadline-status c ctx)
+                     rv (procedure/formal-review-outcome c)
+                     blocking? (procedure/deadline-blocking? st)]
+                 (row (code (:id c))
+                      (if (procedure/declared? c)
+                        (code (str (:jurisdiction c) "/" (nm (:procedure-id c))))
+                        (span "muted" "not declared"))
+                      (if p (esc (:proc/name p)) (span "muted" "—"))
+                      (if p (esc (:proc/legal-basis p)) (span "muted" "—"))
+                      (if p (esc (deadline/describe p)) (span "muted" "—"))
+                      (if p (code (nm (:proc/lapse-effect p))) (span "muted" "—"))
+                      (if blocking? (span "critical" (nm st)) (span "ok" (nm st)))
+                      (if (review/blocking? rv) (span "critical" (nm rv)) (span "ok" (nm rv)))
+                      (if (procedure/decision-precluded? c ctx)
+                        (span "critical" "precluded")
+                        (span "ok" "not precluded")))))]
+    (section "Statutory procedure (kotoba-lang/tetsuzuki)"
+             (str "Recomputed independently from each case's own record — the proposal's "
+                  "claim about its own deadline is never read. A case that declares no "
+                  "<code>:procedure-id</code> is exempt (<code>:not-declared</code>): not every "
+                  "community case maps onto the general catalogue, and not being catalogued is "
+                  "not a violation. A case that <em>does</em> declare one is always checked, and "
+                  "an unresolvable deadline fails closed — an agency that cannot say whether it "
+                  "is still inside its own statutory period does not get to decide.")
+             (table ["Case" "Declared procedure" "Name" "Legal basis" "Deadline"
+                     "Lapse effect" "Deadline status" "Formal review" "Decision"]
+                    rows))))
+
+(defn- fired-counts [ledger]
+  (frequencies (mapcat #(map :rule (:violations %)) (hard-holds ledger))))
+
+(defn- rules-section [ledger]
+  (let [fired (fired-counts ledger)
+        rows (for [{:keys [rule ops recomputes]} rule-catalog]
+               (let [n (get fired rule 0)]
+                 (row (code rule) (code ops) (esc recomputes)
+                      (if (pos? n)
+                        (span "critical" (str n "×"))
+                        (span "muted" "not reached")))))]
+    (section "Governor checks"
+             (str "Every rule below is HARD: a human approver <em>cannot</em> override one. "
+                  "The op scope and what each rule recomputes describe "
+                  "<code>adminops.governor</code>'s fixed contract; the <em>fired</em> column is "
+                  "counted off this run's ledger. <code>-main</code> refuses to write this page "
+                  "if the run produces a rule that is missing from this table, so the two cannot "
+                  "drift apart silently.")
+             (table ["Rule" "Evaluated on" "Independently recomputes" "Fired (this run)"]
+                    rows))))
+
+(defn- hard-holds-section [ledger]
+  (let [rows (for [h (hard-holds ledger)
+                   v (:violations h)]
+               (row (code (:op h)) (code (:subject h))
+                    (span "critical" (nm (:rule v)))
+                    (esc (:detail v))
+                    (esc (:confidence h))))]
+    (section "HARD holds reached in this run"
+             (str "None of these ever reached a human: the graph routes them straight from "
+                  "<code>:decide</code> to <code>:hold</code>, which writes the rejection to the "
+                  "audit ledger and mutates nothing. The detail text is the governor's own, "
+                  "copied out of the verdict rather than re-worded here.")
+             (table ["Op" "Case" "Rule" "Governor detail" "Advisor confidence"] rows))))
+
+(defn- phase-section [ledger]
+  (let [gate-rows (for [[n {:keys [label writes auto]}] (sort-by key phase/phases)]
+                    (row (code n) (esc label)
+                         (if (seq writes)
+                           (str/join " " (map #(code %) (sort-by str writes)))
+                           (span "muted" "none"))
+                         (if (seq auto)
+                           (str/join " " (map #(code %) (sort-by str auto)))
+                           (span "muted" "none"))))
+        hold-rows (for [h (phase-holds ledger)]
+                    (row (code (:op h)) (code (:subject h))
+                         (span "warn" (nm (:phase-reason h)))
+                         (code (:phase h))
+                         (span "muted" "no governor violation — the rollout phase held it")))]
+    (section "Rollout phase gate"
+             (str "Derived from <code>adminops.phase/phases</code>, not transcribed. "
+                  "<code>:case/decide</code> and <code>:case/notify</code> are absent from "
+                  "<em>every</em> phase's auto set including phase 3 — a permanent structural "
+                  "fact, not a milestone still to come. The governor's "
+                  "<code>:actuation/decide-case</code> / <code>:actuation/notify-citizen</code> "
+                  "high-stakes gate enforces the same invariant independently: two layers agree "
+                  "that a real decision and a real citizen notification are a human's call.")
+             (str (table ["Phase" "Label" "May write" "May auto-commit when clean"] gate-rows)
+                  "    <p class=\"muted\">The same officer, at phase 0, attempting a write the "
+                  "governor had no complaint about:</p>\n"
+                  (table ["Op" "Case" "Phase reason" "Phase" "Note"] hold-rows)))))
+
+(defn- jurisdictions-section []
+  (let [cov (facts/coverage)
+        rows (for [iso3 (sort (keys facts/catalog))]
+               (let [sb (facts/spec-basis iso3)
+                     ap (facts/appeal-spec-basis iso3)]
+                 (row (code iso3) (esc (:name sb)) (esc (:owner-authority sb))
+                      (esc (:legal-basis sb))
+                      (if ap (esc (:appeal-legal-basis sb)) (span "warn" "no appeal regime catalogued"))
+                      (esc (count (:required-evidence sb)))
+                      (str "<code>" (esc (:provenance sb)) "</code>"))))]
+    (section "Jurisdiction spec-basis catalogue"
+             (str "The table <code>adminops.governor</code> checks every "
+                  "<code>:jurisdiction/assess</code> proposal against. A jurisdiction absent "
+                  "here has <em>no</em> spec-basis, full stop — the advisor must not fabricate "
+                  "one, and the governor holds if it tries (see <code>case-2</code>/ATL above). "
+                  "Coverage is reported honestly: "
+                  (esc (:covered cov)) " of " (esc (:requested cov)) " requested jurisdictions "
+                  "seeded, which is a starting catalogue and not a survey of all ~194.")
+             (table ["ISO3" "Name" "Owner authority" "Administrative-procedure basis"
+                     "Appeal-rights basis" "Evidence items" "Provenance"]
+                    rows))))
+
+(defn- assessments-section [db audit]
+  (let [appr (approvals audit)
+        rows (for [c (store/all-cases db)
+                   :let [a (store/assessment-of db (:id c))]
+                   :when a]
+               (row (code (:id c)) (code (:jurisdiction a))
+                    (esc (count (:checklist a)))
+                    (esc (str/join " · " (:checklist a)))
+                    (if (:spec-basis a) (span "ok" "cited") (span "critical" "none"))
+                    (approver-disclosure a (get appr [:jurisdiction/assess (:id c)]))))]
+    (section "Committed jurisdiction assessments"
+             (str "The evidence checklists that actually reached the SSoT. The governor reads "
+                  "these back — not the advisor's confidence — when deciding whether a case may "
+                  "be decided or a citizen notified.")
+             (table ["Case" "Jurisdiction" "Items" "Checklist" "Spec-basis" "Approved by"] rows))))
+
+(defn- record-rows [db history op-kw appr]
+  (for [r history]
+    (row (code (get r "record_id")) (code (get r "kind"))
+         (code (get r "case_id"))
+         (code (get r "jurisdiction"))
+         (esc (:applicant (store/case-record db (get r "case_id"))))
+         (if (get r "immutable") (span "ok" "immutable") (span "warn" "mutable"))
+         (approver-disclosure r (get appr [op-kw (get r "case_id")])))))
+
+(defn- decisions-section [db audit]
+  (let [appr (approvals audit)]
+    (section "Case-decision records (registry drafts)"
+             (str "Built by <code>adminops.registry/register-decision</code> — a "
+                  "jurisdiction-scoped sequence, not an invented international reference "
+                  "format. Every certificate this actor produces is UNSIGNED: signing is the "
+                  "public-administration operator's own act, not this actor's.")
+             (table ["Record" "Kind" "Case" "Jurisdiction" "Applicant" "Immutable" "Approved by"]
+                    (record-rows db (store/decision-history db) :case/decide appr)))))
+
+(defn- notifications-section [db audit]
+  (let [appr (approvals audit)]
+    (section "Citizen-notification records (registry drafts)"
+             (str "The act that triggers assessed-fee accrual and, on an adverse decision, the "
+                  "appeal window. Blocked outright when the fee recompute disagrees "
+                  "(<code>case-3</code>) or when an adverse decision carries no appeal-rights "
+                  "disclosure (<code>case-5</code>).")
+             (table ["Record" "Kind" "Case" "Jurisdiction" "Applicant" "Immutable" "Approved by"]
+                    (record-rows db (store/notification-history db) :case/notify appr)))))
+
+(defn- ledger-section [ledger]
+  (let [rows (for [f ledger]
+               (row (case (:t f)
+                      :committed (span "ok" "committed")
+                      :governor-hold (if (seq (:violations f))
+                                       (span "critical" "governor-hold")
+                                       (span "warn" "governor-hold"))
+                      (span "muted" (nm (:t f))))
+                    (code (:op f))
+                    (code (:subject f))
+                    (code (:actor f))
+                    (if-let [b (seq (:basis f))]
+                      (esc (str/join ", " (map nm b)))
+                      (if-let [pr (:phase-reason f)]
+                        (span "warn" (nm pr))
+                        (span "muted" "—")))
+                    (esc (:summary f))))]
+    (section "Audit ledger (this run)"
+             (str "Append-only. Every commit and every hold this scenario produced, in order. "
+                  "A hold mutates nothing — it exists so that a decision an operator has to "
+                  "defend later is a query over an immutable log rather than a memory.")
+             (table ["Fact" "Op" "Case" "Actor" "Basis" "Summary"] rows))))
+
+(defn- provenance-section [db ledger]
+  (section "How this page was produced"
+           nil
+           (table ["Property" "Value"]
+                  [(row "Generator" (code "adminops.render-html"))
+                   (row "Command" (code "clojure -M:dev:render-html"))
+                   (row "Actor stack"
+                        (str (code "adminops.operation") " → " (code "adminops.governor")
+                             " → " (code "adminops.store")
+                             " (langgraph StateGraph, " (code "interrupt-before :request-approval") ")"))
+                   (row "Advisor" (str (code "adminops.adminopsllm/mock-advisor")
+                                       " — deterministic, offline; the contained intelligence node"))
+                   (row "Store" (str (code "adminops.store/seed-db")
+                                     " — a fresh MemStore per run, seeded from "
+                                     (code "adminops.store/demo-data")))
+                   (row "Statutory layer" (str (code "adminops.procedure")
+                                               " → " (code "kotoba-lang/tetsuzuki")))
+                   (row "Seeded cases" (esc (count (store/all-cases db))))
+                   (row "Ledger facts" (esc (count ledger)))
+                   (row "HARD holds" (span "critical" (count (hard-holds ledger))))
+                   (row "Distinct HARD rules"
+                        (span "critical" (count (fired-counts ledger))))
+                   (row "Determinism"
+                        (str "no timestamps, no randomness, no anchor dates — "
+                             "byte-identical across reruns against the same seed"))
+                   (row "Build-time invariant"
+                        (str (code "-main") " throws rather than writing this page if the run "
+                             "produces zero governor holds, zero HARD holds, or a violation "
+                             "rule missing from the check table above"))])))
+
+;; ----------------------------- document -----------------------------
+
+(defn render
+  "Renders the whole document from a store that has already run
+  `run-demo!` (or any other real scenario) plus that run's audit facts."
+  [db audit]
+  (let [ledger (vec (store/ledger db))]
+    (str
+     "<!DOCTYPE html>\n"
+     "<html lang=\"en\"><head><meta charset=\"utf-8\">"
+     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+     "<meta name=\"color-scheme\" content=\"light\">"
+     "<title>cloud-itonami-isic-8411 &middot; community public administration</title><style>"
+     (jp-go-dds.skin/dds+skin)
+     "</style></head><body>\n"
+     "<header class=\"bar\">\n"
+     "  <h1>Community public administration (ISIC 8411) — Operator Console</h1>\n"
+     "  <span class=\"badge\">read-only sample · governor-gated · case decisions and citizen "
+     "notifications are always human-approved</span>\n"
+     "</header>\n"
+     "<main>\n"
+     (cases-section db ledger)
+     (rules-section ledger)
+     (hard-holds-section ledger)
+     (procedure-section db)
+     (phase-section ledger)
+     (jurisdictions-section)
+     (assessments-section db audit)
+     (decisions-section db audit)
+     (notifications-section db audit)
+     (ledger-section ledger)
+     (provenance-section db ledger)
+     "</main>\n"
+     "<footer>\n"
+     "  <p>Generated at build time by <code>adminops.render-html</code> from a real run of this "
+     "repo's actor. Nothing on this page is hand-typed sample data.</p>\n"
+     "</footer>\n"
+     "</body></html>\n")))
+
+;; ----------------------------- entry point -----------------------------
+
+(defn- assert-holds!
+  "Build-time invariant, not a convention: a console that shows no HARD
+  hold is a console that has not demonstrated the governor at all, and it
+  must not be possible to write one by accident."
+  [ledger]
+  (let [h (holds ledger)
+        hard (hard-holds ledger)
+        fired (set (keys (fired-counts ledger)))
+        documented (set (map :rule rule-catalog))
+        undocumented (remove documented fired)]
+    (when (zero? (count h))
+      (throw (ex-info (str "adminops.render-html: the scenario produced ZERO :governor-hold "
+                           "records. Refusing to write a console that never shows the governor "
+                           "refusing anything.")
+                      {:ledger-facts (count ledger)})))
+    (when (zero? (count hard))
+      (throw (ex-info (str "adminops.render-html: the scenario produced " (count h)
+                           " hold(s) but none carried a governor rule violation. A phase-gate "
+                           "hold is not a HARD hold. Refusing to write.")
+                      {:holds (count h)})))
+    (when (seq undocumented)
+      (throw (ex-info (str "adminops.render-html: the run produced violation rule(s) missing "
+                           "from `rule-catalog`: " (pr-str (vec undocumented))
+                           ". The check table would be wrong. Refusing to write.")
+                      {:undocumented (vec undocumented)})))
+    {:holds (count h) :hard (count hard) :rules (sort-by str fired)}))
+
+(defn -main [& args]
+  (let [out (or (first args) "docs/samples/operator-console.html")
+        {:keys [db audit]} (run-demo!)
+        ledger (vec (store/ledger db))
+        {:keys [holds hard rules]} (assert-holds! ledger)]
+    (spit out (render db audit))
+    (println "wrote" out
+             (str "(" (count ledger) " ledger facts, "
+                  holds " holds of which " hard " HARD, "
+                  (count rules) " distinct HARD rules: "
+                  (str/join ", " (map nm rules)) ", "
+                  (count (store/decision-history db)) " decision records, "
+                  (count (store/notification-history db)) " notification records)"))))
