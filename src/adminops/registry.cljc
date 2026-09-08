@@ -26,7 +26,7 @@
   operator would keep, not the act of deciding a case or notifying a
   citizen itself (that is `adminops.operation`'s `:case/decide`/
   `:case/notify`, always human-gated -- see README `Actuation`)."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (defn- unsigned-certificate
   "Every certificate this actor produces is UNSIGNED -- signature is
@@ -100,7 +100,7 @@
     (throw (ex-info "decision: jurisdiction required" {})))
   (when (< sequence 0)
     (throw (ex-info "decision: sequence must be >= 0" {})))
-  (let [decision-number (str (str/upper-case jurisdiction) "-DEC-" (zero-pad sequence 6))
+  (let [decision-number (str (str/upper jurisdiction) "-DEC-" (zero-pad sequence 6))
         record {"record_id" decision-number
                 "kind" "decision-draft"
                 "case_id" case-id
@@ -126,7 +126,7 @@
     (throw (ex-info "notification: jurisdiction required" {})))
   (when (< sequence 0)
     (throw (ex-info "notification: sequence must be >= 0" {})))
-  (let [notification-number (str (str/upper-case jurisdiction) "-NTF-" (zero-pad sequence 6))
+  (let [notification-number (str (str/upper jurisdiction) "-NTF-" (zero-pad sequence 6))
         record {"record_id" notification-number
                 "kind" "notification-draft"
                 "case_id" case-id
