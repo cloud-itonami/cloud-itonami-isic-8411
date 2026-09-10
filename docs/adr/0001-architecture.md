@@ -134,7 +134,7 @@ real status-lifecycle bug (ADR-2607071320).
 `adminops.store/Store` is implemented by both `MemStore` (atom-
 backed, default for dev/tests/demo) and `DatomicStore` (`langchain.
 db`-backed), proven to satisfy the same contract in
-`test/adminops/store_contract_test.clj`.
+`test/adminops/store_contract_test.kotoba`.
 
 ### Decision 9: no bespoke domain capability lib, and no `blueprint.edn` field-sync fixes needed beyond `:optional-technologies`
 
@@ -187,7 +187,7 @@ a case or auto-notifying a citizen).
   application overall) and `appeal-rights-notice-missing?` (87th
   distinct application overall, the THIRTEENTH conditional variant).
 - `MemStore` ‖ `DatomicStore` parity is proven by
-  `test/adminops/store_contract_test.clj`.
+  `test/adminops/store_contract_test.kotoba`.
 - 39 tests / 176 assertions pass; lint is clean; the demo
   (`clojure -M:dev:run`) walks two clean decide+notify lifecycles
   (non-adverse decision, adverse decision with appeal rights

@@ -206,14 +206,14 @@ capability library, matching `quarryops`/0810's, `agronomyops`/0162's,
 
 | File | Role |
 |---|---|
-| `src/adminops/store.cljc` | **Store** protocol -- `MemStore` ‖ `DatomicStore` (`langchain.db`) + append-only audit ledger + decision AND notification history (dual history). The double-actuation guard checks dedicated `:decided?`/`:notified?` booleans rather than a `:status` value |
-| `src/adminops/registry.cljc` | Decision/notification draft records, plus `assessed-fee-matches-claim?` -- an honest reapplication of the SAME ground-truth-recompute discipline every sibling actor's own cost/total-matching check establishes |
-| `src/adminops/facts.cljc` | Per-jurisdiction administrative-procedure AND appeal-rights catalog with an official spec-basis citation per entry, honest coverage reporting -- ALL FOUR seeded jurisdictions have an appeal-rights sub-citation here |
-| `src/adminops/adminopsllm.cljc` | **AdminOps-LLM** -- `mock-advisor` ‖ `llm-advisor`; intake/jurisdiction-assessment/decision/notification proposals |
-| `src/adminops/governor.cljc` | **Public Administration Governor** -- 5 HARD checks (spec-basis · evidence-incomplete · decision-outside-authority, FLAGSHIP NEW, the 86th unconditional-evaluation-discipline grounding · assessed-fee-mismatch · appeal-rights-notice-missing, CONDITIONAL, the 87th grounding) + 2 double-actuation guards + 1 soft (confidence/actuation gate) |
-| `src/adminops/phase.cljc` | **Phase 0→3** -- read-only → assisted intake → assisted assess → supervised (decide/notify always human; case intake is the ONLY auto-eligible op, no direct decision-facing risk) |
-| `src/adminops/operation.cljc` | **OperationActor** -- langgraph StateGraph |
-| `src/adminops/sim.cljc` | demo driver |
+| `src/adminops/store.kotoba` | **Store** protocol -- `MemStore` ‖ `DatomicStore` (`langchain.db`) + append-only audit ledger + decision AND notification history (dual history). The double-actuation guard checks dedicated `:decided?`/`:notified?` booleans rather than a `:status` value |
+| `src/adminops/registry.kotoba` | Decision/notification draft records, plus `assessed-fee-matches-claim?` -- an honest reapplication of the SAME ground-truth-recompute discipline every sibling actor's own cost/total-matching check establishes |
+| `src/adminops/facts.kotoba` | Per-jurisdiction administrative-procedure AND appeal-rights catalog with an official spec-basis citation per entry, honest coverage reporting -- ALL FOUR seeded jurisdictions have an appeal-rights sub-citation here |
+| `src/adminops/adminopsllm.kotoba` | **AdminOps-LLM** -- `mock-advisor` ‖ `llm-advisor`; intake/jurisdiction-assessment/decision/notification proposals |
+| `src/adminops/governor.kotoba` | **Public Administration Governor** -- 5 HARD checks (spec-basis · evidence-incomplete · decision-outside-authority, FLAGSHIP NEW, the 86th unconditional-evaluation-discipline grounding · assessed-fee-mismatch · appeal-rights-notice-missing, CONDITIONAL, the 87th grounding) + 2 double-actuation guards + 1 soft (confidence/actuation gate) |
+| `src/adminops/phase.kotoba` | **Phase 0→3** -- read-only → assisted intake → assisted assess → supervised (decide/notify always human; case intake is the ONLY auto-eligible op, no direct decision-facing risk) |
+| `src/adminops/operation.kotoba` | **OperationActor** -- langgraph StateGraph |
+| `src/adminops/sim.kotoba` | demo driver |
 | `test/adminops/*_test.clj` | governor contract · phase invariants · store parity · registry conformance · facts coverage |
 
 ## Business-process coverage (honest)
