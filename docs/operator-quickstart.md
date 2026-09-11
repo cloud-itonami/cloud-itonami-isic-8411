@@ -20,7 +20,7 @@ cd cloud-itonami-isic-8411
 ## 2. Run tests
 
 ```bash
-clojure -M:test
+kbb -M:test
 ```
 
 Expect green if maturity is `implemented`. Fix failures before operating.
@@ -36,7 +36,7 @@ Publish: enable GitHub Pages on `main` `/docs`, or any static host.
 ## 3b. See the Governor actually refuse things
 
 ```bash
-clojure -M:dev:render-html   # regenerates docs/samples/operator-console.html
+kbb -M:dev:render-html   # regenerates docs/samples/operator-console.html
 open docs/samples/operator-console.html
 ```
 

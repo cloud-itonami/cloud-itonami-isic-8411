@@ -44,7 +44,7 @@
   `:source` before any arithmetic. That keeps every epoch day off this
   page -- there was no number for the renderer to pick.
 
-  Usage: `clojure -M:dev:render-html [out-file]`
+  Usage: `kbb -M:dev:render-html [out-file]`
   (default `docs/samples/operator-console.html`)."
   (:require [kotoba.lang.text :as str]
             [jp-go-dds.skin]
@@ -565,7 +565,7 @@
            nil
            (table ["Property" "Value"]
                   [(row "Generator" (code "adminops.render-html"))
-                   (row "Command" (code "clojure -M:dev:render-html"))
+                   (row "Command" (code "kbb -M:dev:render-html"))
                    (row "Actor stack"
                         (str (code "adminops.operation") " → " (code "adminops.governor")
                              " → " (code "adminops.store")
