@@ -2641,7 +2641,7 @@ img,svg { max-width: 100%; height: auto; }</style></head><body>
       <thead><tr><th>Property</th><th>Value</th></tr></thead>
       <tbody>
         <tr><td>Generator</td><td><code>adminops.render-html</code></td></tr>
-        <tr><td>Command</td><td><code>clojure -M:dev:render-html</code></td></tr>
+        <tr><td>Command</td><td><code>kbb -M:dev:render-html</code></td></tr>
         <tr><td>Actor stack</td><td><code>adminops.operation</code> → <code>adminops.governor</code> → <code>adminops.store</code> (langgraph StateGraph, <code>interrupt-before :request-approval</code>)</td></tr>
         <tr><td>Advisor</td><td><code>adminops.adminopsllm/mock-advisor</code> — deterministic, offline; the contained intelligence node</td></tr>
         <tr><td>Store</td><td><code>adminops.store/seed-db</code> — a fresh MemStore per run, seeded from <code>adminops.store/demo-data</code></td></tr>

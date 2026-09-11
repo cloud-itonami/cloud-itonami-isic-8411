@@ -1,5 +1,5 @@
 (ns adminops.sim
-  "Demo driver -- `clojure -M:dev:run`. Walks a clean case through
+  "Demo driver -- `kbb -M:dev:run`. Walks a clean case through
   intake -> jurisdiction assessment -> case decision (escalate/
   approve/commit) -> citizen notification (escalate/approve/commit),
   then a SEPARATE clean adverse-decision case through the same
